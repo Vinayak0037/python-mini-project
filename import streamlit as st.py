@@ -1,6 +1,8 @@
 import streamlit as st
 import datetime
+import pandas as pd
 from supabase import create_client, Client
+from geopy.geocoders import Nominatim
 
 st.set_page_config(page_title="Food Redistribution Network", page_icon="🌱", layout="wide")
 
@@ -12,6 +14,18 @@ def init_connection():
     return create_client(url, key)
 
 supabase: Client = init_connection()
+
+# Free geocoder to turn text addresses into map coordinates
+@st.cache_data(show_spinner=False)
+def get_coordinates(address):
+    try:
+        geolocator = Nominatim(user_agent="food_redistribution_app")
+        location = geolocator.geocode(address, timeout=5)
+        if location:
+            return location.latitude, location.longitude
+    except Exception:
+        pass
+    return None, None
 
 # Fetch live donations from database
 def get_donations():
@@ -36,7 +50,7 @@ with donor_tab:
     with col1:
         donor_name = st.text_input("Donor / Business Name", "Spice Garden Bistro")
         food_item = st.text_input("Food Item Details", "Mixed Meal Boxes")
-        pickup_address = st.text_area("Pickup Address", "72 Commercial Street, Sector 4")
+        pickup_address = st.text_area("Pickup Address (Include City for Map Pin)", "FC Road, Pune, Maharashtra")
     with col2:
         quantity = st.number_input("Portions / Meals Available", min_value=1, value=30)
         estimated_drop = st.time_input("Expected Pickup/Drop Time", datetime.time(20, 0))
@@ -75,11 +89,11 @@ with shelter_tab:
             if item["status"] == "Available":
                 shelter_name = st.text_input("Shelter Name", key=f"s_{item['id']}")
                 residents = st.number_input("Residents Count", min_value=1, value=25, key=f"r_{item['id']}")
-                drop_loc = st.text_input("Drop-off Address", key=f"d_{item['id']}")
+                drop_loc = st.text_input("Drop-off Address (Include City)", "Kothrud, Pune", key=f"d_{item['id']}")
                 if st.button("Claim Food", key=f"b_{item['id']}"):
                     supabase.table("donations").update({
                         "status": "Claimed",
-                        "drop_address": f"{shelter_name} ({drop_loc})",
+                        "drop_address": f"{shelter_name} - {drop_loc}",
                         "people_count": residents
                     }).eq("id", item["id"]).execute()
                     st.success("Claimed!")
@@ -88,14 +102,33 @@ with shelter_tab:
                 st.info("🔒 Claimed")
         st.divider()
 
-# 3. DELIVERY CHAIN TRACKER
+# 3. DELIVERY CHAIN TRACKER (WITH LIVE MAP)
 with logistics_tab:
-    st.subheader("🚚 Active Route & Delivery Chain")
+    st.subheader("🚚 Active Route & Live Delivery Map")
     claimed = [d for d in donations if d["status"] == "Claimed"]
+    
+    map_points = []
+    for item in donations:
+        p_lat, p_lon = get_coordinates(item["pickup_address"])
+        if p_lat and p_lon:
+            map_points.append({"lat": p_lat, "lon": p_lon, "type": "Pickup", "name": item["donor"]})
+        if item["status"] == "Claimed":
+            clean_drop = item["drop_address"].split(" - ")[-1]
+            d_lat, d_lon = get_coordinates(clean_drop)
+            if d_lat and d_lon:
+                map_points.append({"lat": d_lat, "lon": d_lon, "type": "Drop-off", "name": item["drop_address"]})
+
+    if map_points:
+        st.map(pd.DataFrame(map_points), zoom=11)
+        st.caption("Showing live pins for active restaurant pickups and shelter drop-offs.")
+    else:
+        st.info("Add recognizable street/city addresses (e.g., 'FC Road, Pune') to see live pins on the map.")
+
+    st.divider()
     if not claimed:
-        st.info("No active deliveries right now.")
+        st.info("No active deliveries right now. Claim a donation in the Shelter tab to see routes!")
     for item in claimed:
-        st.markdown(f"**Route #{item['id']}:** `{item['donor']}` ➔ `{item['drop_address']}`")
+        st.markdown(f"**Route #{item['id']}:** `{item['donor']}` ({item['pickup_address']}) ➔ `{item['drop_address']}`")
         st.write(f"• **Meals:** {item['qty']} portions for {item['people_count']} residents | **ETA:** {item['drop_time']}")
         st.divider()
 
