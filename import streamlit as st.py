@@ -15,7 +15,7 @@ supabase: Client = init_connection()
 
 # Fetch live donations from database
 def get_donations():
-    response = supabase.table("Donations").select("*").order("id", desc=True).execute()
+    response = supabase.table("donations").select("*").order("id", desc=True).execute()
     return response.data
 
 st.title("🌱 Food Surplus Redistribution Network")
@@ -42,7 +42,7 @@ with donor_tab:
         estimated_drop = st.time_input("Expected Pickup/Drop Time", datetime.time(20, 0))
 
     if st.button("🚀 Submit Food Donation", type="primary"):
-        supabase.table("Donations").insert({
+        supabase.table("donations").insert({
             "item": food_item,
             "qty": quantity,
             "donor": donor_name,
@@ -77,7 +77,7 @@ with shelter_tab:
                 residents = st.number_input("Residents Count", min_value=1, value=25, key=f"r_{item['id']}")
                 drop_loc = st.text_input("Drop-off Address", key=f"d_{item['id']}")
                 if st.button("Claim Food", key=f"b_{item['id']}"):
-                    supabase.table("Donations").update({
+                    supabase.table("donations").update({
                         "status": "Claimed",
                         "drop_address": f"{shelter_name} ({drop_loc})",
                         "people_count": residents
