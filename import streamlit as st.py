@@ -106,7 +106,7 @@ with shelter_tab:
 with logistics_tab:
     st.subheader("🚚 Active Route & Live Delivery Map")
     claimed = [d for d in donations if d["status"] == "Claimed"]
-    
+
     map_points = []
     for item in donations:
         p_lat, p_lon = get_coordinates(item["pickup_address"])
@@ -132,11 +132,46 @@ with logistics_tab:
         st.write(f"• **Meals:** {item['qty']} portions for {item['people_count']} residents | **ETA:** {item['drop_time']}")
         st.divider()
 
-# 4. IMPACT DASHBOARD
+# 4. IMPACT DASHBOARD (WITH CHARTS & CSV EXPORT)
 with analytics_tab:
-    st.subheader("📊 Live Community Impact")
-    tot_meals = sum(d["qty"] for d in donations)
-    tot_people = sum(d["people_count"] for d in donations if d["status"] == "Claimed")
-    m1, m2 = st.columns(2)
-    m1.metric("Total Meals Logged", tot_meals)
-    m2.metric("People Fed in Shelters/Homes", tot_people)
+    st.subheader("📊 Live Community & Sustainability Impact")
+    if not donations:
+        st.info("No donation data available yet to generate analytics.")
+    else:
+        df = pd.DataFrame(donations)
+        tot_meals = int(df["qty"].sum())
+        tot_people = int(df[df["status"] == "Claimed"]["people_count"].sum())
+        food_saved_kg = round(tot_meals * 0.45, 1)  # ~450g per meal rescued
+        co2_prevented_kg = round(food_saved_kg * 2.5, 1)  # ~2.5 kg CO2e saved per kg food waste
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Meals Logged", tot_meals)
+        m2.metric("People Fed in Shelters", tot_people)
+        m3.metric("Food Waste Diverted", f"{food_saved_kg} kg")
+        m4.metric("CO₂ Emissions Saved", f"{co2_prevented_kg} kg")
+
+        st.divider()
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("#### 🏢 Meals Contributed by Donor")
+            donor_chart = df.groupby("donor")["qty"].sum()
+            st.bar_chart(donor_chart, color="#2e7d32")
+        with c2:
+            st.markdown("#### 📦 Donation Status Breakdown")
+            status_chart = df.groupby("status")["qty"].sum()
+            st.bar_chart(status_chart, color="#ef6c00")
+
+        st.divider()
+        st.markdown("#### 📄 Full Audit Log & CSR Export")
+        display_cols = ["id", "donor", "item", "qty", "status", "pickup_address", "drop_address", "people_count", "drop_time"]
+        available_cols = [c for c in display_cols if c in df.columns]
+        st.dataframe(df[available_cols], use_container_width=True, hide_index=True)
+
+        csv_data = df[available_cols].to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="📥 Download Impact Report (CSV)",
+            data=csv_data,
+            file_name="food_redistribution_impact_report.csv",
+            mime="text/csv",
+            type="primary"
+        )
