@@ -1,6 +1,7 @@
 import streamlit as st
 import datetime
 import pandas as pd
+import urllib.parse
 from supabase import create_client, Client
 from geopy.geocoders import Nominatim
 
@@ -26,6 +27,13 @@ def get_coordinates(address):
     except Exception:
         pass
     return None, None
+
+# Generate one-click Google Maps route link
+def build_gmaps_route_url(origin, destination):
+    clean_dest = destination.split(" - ")[-1]
+    origin_q = urllib.parse.quote_plus(origin)
+    dest_q = urllib.parse.quote_plus(clean_dest)
+    return f"https://www.google.com/maps/dir/?api=1&origin={origin_q}&destination={dest_q}&travelmode=driving"
 
 # Fetch live donations from database
 def get_donations():
@@ -83,7 +91,7 @@ with shelter_tab:
             st.markdown(f"### 🍱 {item['item']}")
             st.write(f"🏢 **Donor:** {item['donor']} | 📍 **Pickup:** {item['pickup_address']}")
             st.write(f"📦 **Quantity:** {item['qty']} meals | 🕒 **Drop Time:** {item['drop_time']}")
-            if item["status"] == "Claimed":
+            if item["status"] in ["Claimed", "Delivered"]:
                 st.write(f"🎯 **Destination:** {item['drop_address']} (Capacity: {item['people_count']} residents)")
         with c2:
             if item["status"] == "Available":
@@ -98,39 +106,58 @@ with shelter_tab:
                     }).eq("id", item["id"]).execute()
                     st.success("Claimed!")
                     st.rerun()
+            elif item["status"] == "Delivered":
+                st.success("✅ Delivered")
             else:
-                st.info("🔒 Claimed")
+                st.info("🚚 In Transit")
         st.divider()
 
-# 3. DELIVERY CHAIN TRACKER (WITH LIVE MAP)
+# 3. DELIVERY CHAIN TRACKER (LIVE MAP + ONE-CLICK ROUTES + MARK DELIVERED)
 with logistics_tab:
     st.subheader("🚚 Active Route & Live Delivery Map")
-    claimed = [d for d in donations if d["status"] == "Claimed"]
+    active_deliveries = [d for d in donations if d["status"] == "Claimed"]
+    completed_deliveries = [d for d in donations if d["status"] == "Delivered"]
 
     map_points = []
     for item in donations:
-        p_lat, p_lon = get_coordinates(item["pickup_address"])
-        if p_lat and p_lon:
-            map_points.append({"lat": p_lat, "lon": p_lon, "type": "Pickup", "name": item["donor"]})
+        if item["status"] in ["Available", "Claimed"]:
+            p_lat, p_lon = get_coordinates(item["pickup_address"])
+            if p_lat and p_lon:
+                map_points.append({"lat": p_lat, "lon": p_lon})
         if item["status"] == "Claimed":
             clean_drop = item["drop_address"].split(" - ")[-1]
             d_lat, d_lon = get_coordinates(clean_drop)
             if d_lat and d_lon:
-                map_points.append({"lat": d_lat, "lon": d_lon, "type": "Drop-off", "name": item["drop_address"]})
+                map_points.append({"lat": d_lat, "lon": d_lon})
 
     if map_points:
         st.map(pd.DataFrame(map_points), zoom=11)
-        st.caption("Showing live pins for active restaurant pickups and shelter drop-offs.")
+        st.caption("Showing live pins for active restaurant pickups and in-transit shelter drop-offs.")
     else:
-        st.info("Add recognizable street/city addresses (e.g., 'FC Road, Pune') to see live pins on the map.")
+        st.info("No active pickups or in-transit routes on the map right now.")
 
     st.divider()
-    if not claimed:
-        st.info("No active deliveries right now. Claim a donation in the Shelter tab to see routes!")
-    for item in claimed:
-        st.markdown(f"**Route #{item['id']}:** `{item['donor']}` ({item['pickup_address']}) ➔ `{item['drop_address']}`")
-        st.write(f"• **Meals:** {item['qty']} portions for {item['people_count']} residents | **ETA:** {item['drop_time']}")
+    st.markdown("#### 🛵 Active Deliveries (In Transit)")
+    if not active_deliveries:
+        st.info("No active deliveries right now. Claim a donation in the Shelter tab to dispatch a route!")
+    for item in active_deliveries:
+        r1, r2 = st.columns([3, 1])
+        with r1:
+            st.markdown(f"**Route #{item['id']}:** `{item['donor']}` ({item['pickup_address']}) ➔ `{item['drop_address']}`")
+            st.write(f"• **Meals:** {item['qty']} portions for {item['people_count']} residents | **ETA:** {item['drop_time']}")
+        with r2:
+            route_url = build_gmaps_route_url(item["pickup_address"], item["drop_address"])
+            st.link_button("🗺️ Open Google Maps Route", route_url, use_container_width=True)
+            if st.button("✅ Mark as Delivered", key=f"del_{item['id']}", type="primary", use_container_width=True):
+                supabase.table("donations").update({"status": "Delivered"}).eq("id", item["id"]).execute()
+                st.success(f"Route #{item['id']} marked as Delivered!")
+                st.rerun()
         st.divider()
+
+    if completed_deliveries:
+        with st.expander(f"✅ Completed Deliveries ({len(completed_deliveries)})"):
+            for item in completed_deliveries:
+                st.write(f"• **Route #{item['id']}:** {item['donor']} ➔ {item['drop_address']} ({item['qty']} meals delivered)")
 
 # 4. IMPACT DASHBOARD (WITH CHARTS & CSV EXPORT)
 with analytics_tab:
@@ -140,9 +167,9 @@ with analytics_tab:
     else:
         df = pd.DataFrame(donations)
         tot_meals = int(df["qty"].sum())
-        tot_people = int(df[df["status"] == "Claimed"]["people_count"].sum())
-        food_saved_kg = round(tot_meals * 0.45, 1)  # ~450g per meal rescued
-        co2_prevented_kg = round(food_saved_kg * 2.5, 1)  # ~2.5 kg CO2e saved per kg food waste
+        tot_people = int(df[df["status"].isin(["Claimed", "Delivered"])]["people_count"].sum())
+        food_saved_kg = round(tot_meals * 0.45, 1)
+        co2_prevented_kg = round(food_saved_kg * 2.5, 1)
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Meals Logged", tot_meals)
